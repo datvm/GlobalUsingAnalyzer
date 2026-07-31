@@ -118,11 +118,11 @@
     <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
   </resheader>
   <data name="AnalyzerDescription" xml:space="preserve">
-    <value>Ordinary using directives can be promoted to global usings in ZGlobalUsings.cs so every file in the project shares them.</value>
+    <value>Using directives (plain, static, alias, or global) outside ZGlobalUsings.cs can be moved there so the project keeps a single globals file.</value>
     <comment>An optional longer localizable description of the diagnostic.</comment>
   </data>
   <data name="AnalyzerMessageFormat" xml:space="preserve">
-    <value>Using directive for '{0}' can be moved to a global using</value>
+    <value>Using directive '{0}' can be moved to a global using</value>
     <comment>The format-able message the diagnostic displays.</comment>
   </data>
   <data name="AnalyzerTitle" xml:space="preserve">

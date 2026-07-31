@@ -79,5 +79,16 @@ namespace GlobalUsingAnalyzer
                 return ResourceManager.GetString("CodeFixTitle", resourceCulture);
             }
         }
+
+        /// <summary>
+        ///   Looks up a localized string similar to Move to .csproj as &lt;Using /&gt;.
+        /// </summary>
+        internal static string CodeFixTitleCsproj
+        {
+            get
+            {
+                return ResourceManager.GetString("CodeFixTitleCsproj", resourceCulture);
+            }
+        }
     }
 }

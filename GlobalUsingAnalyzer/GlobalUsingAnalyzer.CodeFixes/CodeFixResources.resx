@@ -119,6 +119,10 @@
   </resheader>
   <data name="CodeFixTitle" xml:space="preserve">
     <value>Move to ZGlobalUsings.cs as global using</value>
-    <comment>The title of the code fix.</comment>
+    <comment>The title of the code fix that writes ZGlobalUsings.cs.</comment>
+  </data>
+  <data name="CodeFixTitleCsproj" xml:space="preserve">
+    <value>Move to .csproj as &lt;Using /&gt;</value>
+    <comment>The title of the code fix that writes MSBuild Using items.</comment>
   </data>
 </root>

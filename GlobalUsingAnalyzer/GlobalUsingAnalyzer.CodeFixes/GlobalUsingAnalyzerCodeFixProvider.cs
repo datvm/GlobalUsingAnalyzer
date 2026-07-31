@@ -1,4 +1,4 @@
-﻿using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CodeActions;
 using Microsoft.CodeAnalysis.CodeFixes;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -15,32 +15,33 @@ using System.Threading.Tasks;
 namespace GlobalUsingAnalyzer;
 
 /// <summary>
-/// Lightbulb fix for GUA001: remove a local <c>using N;</c> and add
-/// <c>global using N;</c> to ZGlobalUsings.cs at the project root (creating the file if needed).
+/// Lightbulb fixes for GUA001:
+/// <list type="number">
+/// <item>Move to the .csproj as <c>&lt;Using /&gt;</c> (preferred when a .csproj is available).</item>
+/// <item>Move to ZGlobalUsings.cs as <c>global using</c>.</item>
+/// </list>
 /// </summary>
 [ExportCodeFixProvider(LanguageNames.CSharp, Name = nameof(GlobalUsingAnalyzerCodeFixProvider)), Shared]
 public partial class GlobalUsingAnalyzerCodeFixProvider : CodeFixProvider
 {
-    /// <summary>
-    /// Shared equivalence key so Fix All groups every "move to global using" action together.
-    /// (If keys differ, the IDE treats them as different fixes and won't batch them.)
-    /// </summary>
-    public const string EquivalenceKey = nameof(CodeFixResources.CodeFixTitle);
+    /// <summary>Equivalence key for the ZGlobalUsings.cs destination (Fix All groups on this).</summary>
+    public const string EquivalenceKeyZGlobalUsings = nameof(CodeFixResources.CodeFixTitle);
+
+    /// <summary>Equivalence key for the .csproj <c>&lt;Using /&gt;</c> destination.</summary>
+    public const string EquivalenceKeyCsproj = nameof(CodeFixResources.CodeFixTitleCsproj);
+
+    // Keep old name as alias so existing tests/docs that referenced EquivalenceKey still compile if any remain.
+    public const string EquivalenceKey = EquivalenceKeyZGlobalUsings;
 
     public sealed override ImmutableArray<string> FixableDiagnosticIds =>
         ImmutableArray.Create(GlobalUsingAnalyzerAnalyzer.DiagnosticId);
 
     /// <summary>
-    /// Enables the lightbulb submenu:
-    /// Fix all in document / project / solution.
-    ///
-    /// We cannot use <see cref="WellKnownFixAllProviders.BatchFixer"/> here: that helper
-    /// runs each single fix against the *original* solution and merges text edits. Every
-    /// fix writes the same ZGlobalUsings.cs file, so later edits overwrite earlier ones.
-    /// A custom provider collects all namespaces first, then writes the file once.
+    /// One Fix All provider that dispatches on <see cref="FixAllContext.CodeActionEquivalenceKey"/>
+    /// so each lightbulb option has its own Fix all in document/project/solution.
     /// </summary>
     public sealed override FixAllProvider GetFixAllProvider() =>
-        MoveToGlobalUsingsFixAllProvider.Instance;
+        MoveUsingsFixAllProvider.Instance;
 
     public sealed override async Task RegisterCodeFixesAsync(CodeFixContext context)
     {
@@ -53,48 +54,212 @@ public partial class GlobalUsingAnalyzerCodeFixProvider : CodeFixProvider
         var diagnostic = context.Diagnostics.First();
         var diagnosticSpan = diagnostic.Location.SourceSpan;
 
-        // Walk from the token under the diagnostic up to the UsingDirectiveSyntax node.
         var usingDirective = root.FindToken(diagnosticSpan.Start)
             .Parent?
             .AncestorsAndSelf()
             .OfType<UsingDirectiveSyntax>()
             .FirstOrDefault();
 
-        if (usingDirective == null || !GlobalUsingAnalyzerAnalyzer.IsOrdinaryUsing(usingDirective))
+        if (usingDirective == null || !GlobalUsingAnalyzerAnalyzer.IsPromotableUsing(usingDirective))
         {
             return;
         }
 
-        // Title shown in the lightbulb menu (from CodeFixResources.resx).
-        context.RegisterCodeFix(
-            CodeAction.Create(
-                title: CodeFixResources.CodeFixTitle,
-                // Single occurrence: reuse the same bulk helper with one diagnostic.
-                createChangedSolution: ct => ApplyAsync(
-                    context.Document.Project.Solution,
-                    ImmutableArray.Create(diagnostic),
-                    ct),
-                equivalenceKey: EquivalenceKey),
-            diagnostic);
+        var document = context.Document;
+        var alreadyInZGlobalUsings = GlobalUsingAnalyzerAnalyzer.IsGlobalUsingsFile(
+            document.FilePath ?? document.Name);
+
+        // --- Option 1 (preferred / listed first): move into .csproj <Using /> ---
+        // Custom CodeAction: can write .csproj on disk when VS does not track it as a document.
+        if (IsCsprojProject(document.Project))
+        {
+            context.RegisterCodeFix(
+                new MoveToCsprojCodeAction(
+                    title: CodeFixResources.CodeFixTitleCsproj,
+                    equivalenceKey: EquivalenceKeyCsproj,
+                    originalSolution: document.Project.Solution,
+                    diagnostics: ImmutableArray.Create(diagnostic)),
+                diagnostic);
+        }
+
+        // --- Option 2: move into ZGlobalUsings.cs (not offered when already there) ---
+        if (!alreadyInZGlobalUsings)
+        {
+            context.RegisterCodeFix(
+                CodeAction.Create(
+                    title: CodeFixResources.CodeFixTitle,
+                    createChangedSolution: ct => ApplyToZGlobalUsingsAsync(
+                        document.Project.Solution,
+                        ImmutableArray.Create(diagnostic),
+                        ct),
+                    equivalenceKey: EquivalenceKeyZGlobalUsings),
+                diagnostic);
+        }
     }
 
     /// <summary>
-    /// Shared implementation for single fix and Fix All.
-    ///
-    /// Algorithm:
-    /// 1. Map each diagnostic → (document, using node, namespace name).
-    /// 2. Per document, remove all matching using nodes in one tree rewrite.
-    /// 3. Per project, merge the namespace names into that project's ZGlobalUsings.cs once.
+    /// Remove usings from source files and ensure each identity appears once in ZGlobalUsings.cs.
     /// </summary>
-    internal static async Task<Solution> ApplyAsync(
+    internal static async Task<Solution> ApplyToZGlobalUsingsAsync(
         Solution solution,
         ImmutableArray<Diagnostic> diagnostics,
         CancellationToken cancellationToken)
     {
-        // --- Collect work items (skip anything we cannot resolve to a using) ---
+        var (removalsByDocument, specsByProject) = await CollectAsync(solution, diagnostics, cancellationToken)
+            .ConfigureAwait(false);
+
+        solution = await ApplyRemovalsAsync(solution, removalsByDocument, cancellationToken)
+            .ConfigureAwait(false);
+
+        foreach (var pair in specsByProject)
+        {
+            solution = await AddSpecsToGlobalUsingsFileAsync(
+                solution,
+                pair.Key,
+                pair.Value,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        return solution;
+    }
+
+    /// <summary>
+    /// Result of preparing a move-to-csproj fix: C# solution edits plus optional on-disk .csproj writes.
+    /// </summary>
+    internal readonly struct CsprojApplyResult
+    {
+        public CsprojApplyResult(
+            Solution solution,
+            ImmutableArray<CsprojDiskWrite> diskWrites)
+        {
+            Solution = solution;
+            DiskWrites = diskWrites;
+        }
+
+        public Solution Solution { get; }
+
+        public ImmutableArray<CsprojDiskWrite> DiskWrites { get; }
+    }
+
+    internal readonly struct CsprojDiskWrite
+    {
+        public CsprojDiskWrite(string filePath, string newText)
+        {
+            FilePath = filePath;
+            NewText = newText;
+        }
+
+        public string FilePath { get; }
+
+        public string NewText { get; }
+    }
+
+    /// <summary>
+    /// Shared by <see cref="MoveToCsprojCodeAction"/> and unit tests.
+    /// Removes usings from C# files; updates .csproj via workspace when tracked, otherwise
+    /// returns disk writes (never AddAdditionalDocument — VS rejects that for project files).
+    /// </summary>
+    internal static async Task<CsprojApplyResult> ComputeCsprojApplyResultAsync(
+        Solution solution,
+        ImmutableArray<Diagnostic> diagnostics,
+        CancellationToken cancellationToken)
+    {
+        var (removalsByDocument, specsByProject) = await CollectAsync(solution, diagnostics, cancellationToken)
+            .ConfigureAwait(false);
+
+        solution = await ApplyRemovalsAsync(solution, removalsByDocument, cancellationToken)
+            .ConfigureAwait(false);
+
+        var diskWrites = ImmutableArray.CreateBuilder<CsprojDiskWrite>();
+
+        foreach (var pair in specsByProject)
+        {
+            var project = solution.GetProject(pair.Key);
+            if (project == null
+                || pair.Value.Count == 0
+                || !IsCsprojProject(project))
+            {
+                continue;
+            }
+
+            var loaded = await ProjectFileDocumentHelper.TryGetProjectFileTextAsync(
+                solution, pair.Key, cancellationToken).ConfigureAwait(false);
+
+            if (loaded == null)
+            {
+                continue;
+            }
+
+            var originalText = loaded.Value.text;
+            var updatedText = ProjectFileUsingEditor.AddUsings(originalText, pair.Value);
+
+            if (string.Equals(originalText, updatedText, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (loaded.Value.isTrackedInWorkspace)
+            {
+                solution = ProjectFileDocumentHelper.WithProjectFileText(solution, pair.Key, updatedText);
+            }
+            else
+            {
+                diskWrites.Add(new CsprojDiskWrite(project.FilePath, updatedText));
+            }
+        }
+
+        return new CsprojApplyResult(solution, diskWrites.ToImmutable());
+    }
+
+    /// <summary>
+    /// Test-friendly path: applies C# + workspace-tracked csproj edits only
+    /// (disk writes are applied by folding them into additional documents when present).
+    /// </summary>
+    internal static async Task<Solution> ApplyToCsprojAsync(
+        Solution solution,
+        ImmutableArray<Diagnostic> diagnostics,
+        CancellationToken cancellationToken)
+    {
+        var result = await ComputeCsprojApplyResultAsync(solution, diagnostics, cancellationToken)
+            .ConfigureAwait(false);
+
+        solution = result.Solution;
+
+        // Unit-test hosts often expose the .csproj as an additional document after SolutionTransforms;
+        // if Compute left disk writes but the document is findable now, apply them to the solution.
+        foreach (var diskWrite in result.DiskWrites)
+        {
+            var project = solution.Projects.FirstOrDefault(p =>
+                string.Equals(p.FilePath, diskWrite.FilePath, StringComparison.OrdinalIgnoreCase));
+
+            if (project != null
+                && ProjectFileDocumentHelper.FindProjectFileDocument(solution, diskWrite.FilePath) != null)
+            {
+                solution = ProjectFileDocumentHelper.WithProjectFileText(
+                    solution, project.Id, diskWrite.NewText);
+            }
+            else if (project != null)
+            {
+                // Last resort for tests: attach as additional document (never do this in VS apply path).
+                var fileName = Path.GetFileName(diskWrite.FilePath);
+                var added = project.AddAdditionalDocument(
+                    fileName, diskWrite.NewText, filePath: diskWrite.FilePath);
+                solution = added.Project.Solution;
+            }
+        }
+
+        return solution;
+    }
+
+    private static async Task<(
+        Dictionary<DocumentId, List<UsingDirectiveSyntax>> Removals,
+        Dictionary<ProjectId, List<UsingSpec>> SpecsByProject)> CollectAsync(
+        Solution solution,
+        ImmutableArray<Diagnostic> diagnostics,
+        CancellationToken cancellationToken)
+    {
         var removalsByDocument = new Dictionary<DocumentId, List<UsingDirectiveSyntax>>();
-        // projectId → ordered, unique namespace names to add
-        var namespacesByProject = new Dictionary<ProjectId, List<string>>();
+        var specsByProject = new Dictionary<ProjectId, List<UsingSpec>>();
 
         foreach (var diagnostic in diagnostics)
         {
@@ -121,12 +286,12 @@ public partial class GlobalUsingAnalyzerCodeFixProvider : CodeFixProvider
                 .OfType<UsingDirectiveSyntax>()
                 .FirstOrDefault();
 
-            if (usingDirective == null || !GlobalUsingAnalyzerAnalyzer.IsOrdinaryUsing(usingDirective))
+            if (usingDirective == null || !GlobalUsingAnalyzerAnalyzer.IsPromotableUsing(usingDirective))
             {
                 continue;
             }
 
-            var namespaceName = usingDirective.Name.ToString();
+            var spec = UsingSpec.FromSyntax(usingDirective);
 
             if (!removalsByDocument.TryGetValue(document.Id, out var list))
             {
@@ -136,20 +301,26 @@ public partial class GlobalUsingAnalyzerCodeFixProvider : CodeFixProvider
 
             list.Add(usingDirective);
 
-            if (!namespacesByProject.TryGetValue(document.Project.Id, out var names))
+            if (!specsByProject.TryGetValue(document.Project.Id, out var specs))
             {
-                names = new List<string>();
-                namespacesByProject[document.Project.Id] = names;
+                specs = new List<UsingSpec>();
+                specsByProject[document.Project.Id] = specs;
             }
 
-            // Preserve first-seen order; skip duplicates (same using in many files).
-            if (!names.Contains(namespaceName, StringComparer.Ordinal))
+            if (!specs.Any(s => s.Equals(spec)))
             {
-                names.Add(namespaceName);
+                specs.Add(spec);
             }
         }
 
-        // --- Step A: remove local usings (one rewrite per document) ---
+        return (removalsByDocument, specsByProject);
+    }
+
+    private static async Task<Solution> ApplyRemovalsAsync(
+        Solution solution,
+        Dictionary<DocumentId, List<UsingDirectiveSyntax>> removalsByDocument,
+        CancellationToken cancellationToken)
+    {
         foreach (var pair in removalsByDocument)
         {
             var document = solution.GetDocument(pair.Key);
@@ -158,38 +329,49 @@ public partial class GlobalUsingAnalyzerCodeFixProvider : CodeFixProvider
                 continue;
             }
 
+            // Removals were collected against an earlier snapshot; re-bind by span on the current tree.
             var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
             if (root == null)
             {
                 continue;
             }
 
-            // RemoveNodes handles multiple nodes safely (BatchFixer would not coordinate this).
-            var newRoot = root.RemoveNodes(pair.Value, SyntaxRemoveOptions.KeepNoTrivia);
-            solution = solution.WithDocumentSyntaxRoot(pair.Key, newRoot);
-        }
+            var nodesToRemove = new List<UsingDirectiveSyntax>();
+            foreach (var original in pair.Value)
+            {
+                var current = root.FindNode(original.Span, findInsideTrivia: false, getInnermostNodeForTie: true)
+                    as UsingDirectiveSyntax
+                    ?? root.FindToken(original.Span.Start).Parent?
+                        .AncestorsAndSelf()
+                        .OfType<UsingDirectiveSyntax>()
+                        .FirstOrDefault();
 
-        // --- Step B: update each project's ZGlobalUsings.cs once ---
-        foreach (var pair in namespacesByProject)
-        {
-            solution = await AddNamespacesToGlobalUsingsFileAsync(
-                solution,
-                pair.Key,
-                pair.Value,
-                cancellationToken).ConfigureAwait(false);
+                if (current != null)
+                {
+                    nodesToRemove.Add(current);
+                }
+            }
+
+            if (nodesToRemove.Count == 0)
+            {
+                continue;
+            }
+
+            var newRoot = root.RemoveNodes(nodesToRemove, SyntaxRemoveOptions.KeepNoTrivia);
+            solution = solution.WithDocumentSyntaxRoot(pair.Key, newRoot);
         }
 
         return solution;
     }
 
-    private static async Task<Solution> AddNamespacesToGlobalUsingsFileAsync(
+    private static async Task<Solution> AddSpecsToGlobalUsingsFileAsync(
         Solution solution,
         ProjectId projectId,
-        IReadOnlyList<string> namespaceNames,
+        IReadOnlyList<UsingSpec> specs,
         CancellationToken cancellationToken)
     {
         var project = solution.GetProject(projectId);
-        if (project == null || namespaceNames.Count == 0)
+        if (project == null || specs.Count == 0)
         {
             return solution;
         }
@@ -203,15 +385,18 @@ public partial class GlobalUsingAnalyzerCodeFixProvider : CodeFixProvider
             existing = text.ToString();
         }
 
-        // Only append namespaces not already present as global usings.
+        var existingSpecs = new HashSet<UsingSpec>(
+            GlobalUsingAnalyzerAnalyzer.GetUsingSpecsFromText(existing));
+
         var linesToAdd = new List<string>();
-        foreach (var name in namespaceNames)
+        foreach (var spec in specs)
         {
-            if (!ContainsGlobalUsing(existing, name)
-                && !linesToAdd.Any(l => string.Equals(ExtractNamespaceFromGlobalUsingLine(l), name, StringComparison.Ordinal)))
+            if (!existingSpecs.Add(spec))
             {
-                linesToAdd.Add($"global using {name};");
+                continue;
             }
+
+            linesToAdd.Add(spec.ToGlobalUsingLine());
         }
 
         if (linesToAdd.Count == 0)
@@ -243,7 +428,6 @@ public partial class GlobalUsingAnalyzerCodeFixProvider : CodeFixProvider
     {
         return project.Documents.FirstOrDefault(d =>
         {
-            // Prefer FilePath (real path on disk); fall back to Name (used in unit tests).
             if (GlobalUsingAnalyzerAnalyzer.IsGlobalUsingsFile(d.FilePath))
             {
                 return true;
@@ -258,7 +442,6 @@ public partial class GlobalUsingAnalyzerCodeFixProvider : CodeFixProvider
 
     private static string GetGlobalUsingsFilePath(Project project)
     {
-        // project.FilePath is the .csproj path when available (IDE). Unit-test workspaces often leave it null.
         if (!string.IsNullOrEmpty(project.FilePath))
         {
             var directory = Path.GetDirectoryName(project.FilePath);
@@ -271,53 +454,14 @@ public partial class GlobalUsingAnalyzerCodeFixProvider : CodeFixProvider
         return GlobalUsingAnalyzerAnalyzer.GlobalUsingsFileName;
     }
 
-    /// <summary>
-    /// Detects an existing <c>global using N;</c> (tolerant of extra spaces).
-    /// </summary>
-    private static bool ContainsGlobalUsing(string fileContent, string namespaceName)
+    /// <summary>True when this Roslyn project is backed by a <c>.csproj</c> on disk.</summary>
+    internal static bool IsCsprojProject(Project project)
     {
-        using (var reader = new StringReader(fileContent))
+        if (project == null || string.IsNullOrEmpty(project.FilePath))
         {
-            string line;
-            while ((line = reader.ReadLine()) != null)
-            {
-                var name = ExtractNamespaceFromGlobalUsingLine(line);
-                if (string.Equals(name, namespaceName, StringComparison.Ordinal))
-                {
-                    return true;
-                }
-            }
+            return false;
         }
 
-        return false;
-    }
-
-    private static string ExtractNamespaceFromGlobalUsingLine(string line)
-    {
-        var trimmed = line.Trim();
-
-        // Strip optional trailing comment.
-        var commentIndex = trimmed.IndexOf("//", StringComparison.Ordinal);
-        if (commentIndex >= 0)
-        {
-            trimmed = trimmed.Substring(0, commentIndex).TrimEnd();
-        }
-
-        if (!trimmed.EndsWith(";", StringComparison.Ordinal))
-        {
-            return null;
-        }
-
-        // Expect tokens: global using Some.Namespace
-        var withoutSemi = trimmed.Substring(0, trimmed.Length - 1).TrimEnd();
-        var parts = withoutSemi.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length >= 3
-            && parts[0] == "global"
-            && parts[1] == "using")
-        {
-            return string.Concat(parts.Skip(2));
-        }
-
-        return null;
+        return project.FilePath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase);
     }
 }

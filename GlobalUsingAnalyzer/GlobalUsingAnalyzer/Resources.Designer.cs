@@ -70,7 +70,7 @@ namespace GlobalUsingAnalyzer
         }
 
         /// <summary>
-        ///   Looks up a localized string similar to Ordinary using directives can be promoted to global usings in ZGlobalUsings.cs so every file in the project shares them.
+        ///   Looks up a localized string similar to Using directives (plain, static, alias, or global) outside ZGlobalUsings.cs can be moved there so the project keeps a single globals file.
         /// </summary>
         internal static string AnalyzerDescription
         {
@@ -81,7 +81,7 @@ namespace GlobalUsingAnalyzer
         }
 
         /// <summary>
-        ///   Looks up a localized string similar to Using directive for &apos;{0}&apos; can be moved to a global using.
+        ///   Looks up a localized string similar to Using directive &apos;{0}&apos; can be moved to a global using.
         /// </summary>
         internal static string AnalyzerMessageFormat
         {
