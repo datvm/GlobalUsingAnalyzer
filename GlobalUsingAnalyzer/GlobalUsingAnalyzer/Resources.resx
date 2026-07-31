@@ -129,4 +129,16 @@
     <value>Using can be made global</value>
     <comment>The title of the diagnostic.</comment>
   </data>
+  <data name="RazorUsingAnalyzerDescription" xml:space="preserve">
+    <value>@using directives in .cshtml files can be moved to the nearest _ViewImports.cshtml (MVC/Razor Pages); @using in .razor files can be moved to the nearest _Imports.razor (Blazor).</value>
+    <comment>Longer description for Razor @using diagnostics.</comment>
+  </data>
+  <data name="RazorUsingAnalyzerMessageFormat" xml:space="preserve">
+    <value>Razor @using '{0}' in {1} can be moved to imports file (GlobalUsingAnalyzer)</value>
+    <comment>Message for a Razor @using. {0}=identity, {1}=file name. Tagged GlobalUsingAnalyzer so it is distinct from VS built-in Promote.</comment>
+  </data>
+  <data name="RazorUsingAnalyzerTitle" xml:space="preserve">
+    <value>Razor @using can be moved to imports file (GlobalUsingAnalyzer)</value>
+    <comment>Title for the Razor @using diagnostic.</comment>
+  </data>
 </root>

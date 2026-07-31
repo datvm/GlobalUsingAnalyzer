@@ -90,5 +90,38 @@ namespace GlobalUsingAnalyzer
                 return ResourceManager.GetString("CodeFixTitleCsproj", resourceCulture);
             }
         }
+
+        /// <summary>
+        ///   Looks up a localized string similar to Move to nearest imports file.
+        /// </summary>
+        internal static string CodeFixTitleImportsRazor
+        {
+            get
+            {
+                return ResourceManager.GetString("CodeFixTitleImportsRazor", resourceCulture);
+            }
+        }
+
+        /// <summary>
+        ///   Looks up a localized string similar to Move to nearest _ViewImports.cshtml (GlobalUsingAnalyzer).
+        /// </summary>
+        internal static string CodeFixTitleViewImportsCshtml
+        {
+            get
+            {
+                return ResourceManager.GetString("CodeFixTitleViewImportsCshtml", resourceCulture);
+            }
+        }
+
+        /// <summary>
+        ///   Looks up a localized string similar to Move to nearest _Imports.razor (GlobalUsingAnalyzer).
+        /// </summary>
+        internal static string CodeFixTitleImportsRazorFile
+        {
+            get
+            {
+                return ResourceManager.GetString("CodeFixTitleImportsRazorFile", resourceCulture);
+            }
+        }
     }
 }

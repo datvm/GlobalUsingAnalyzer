@@ -125,4 +125,16 @@
     <value>Move to .csproj as &lt;Using /&gt;</value>
     <comment>The title of the code fix that writes MSBuild Using items.</comment>
   </data>
+  <data name="CodeFixTitleImportsRazor" xml:space="preserve">
+    <value>Move to nearest imports file</value>
+    <comment>Fallback title for moving a Razor @using into _ViewImports.cshtml or _Imports.razor.</comment>
+  </data>
+  <data name="CodeFixTitleViewImportsCshtml" xml:space="preserve">
+    <value>Move to nearest _ViewImports.cshtml (GlobalUsingAnalyzer)</value>
+    <comment>MVC / Razor Pages: move @using from .cshtml into _ViewImports.cshtml. Distinct from VS built-in.</comment>
+  </data>
+  <data name="CodeFixTitleImportsRazorFile" xml:space="preserve">
+    <value>Move to nearest _Imports.razor (GlobalUsingAnalyzer)</value>
+    <comment>Blazor: move @using from .razor into _Imports.razor. Distinct from VS built-in Promote.</comment>
+  </data>
 </root>

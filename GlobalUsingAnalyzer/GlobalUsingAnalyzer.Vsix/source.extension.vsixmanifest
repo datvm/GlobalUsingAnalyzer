@@ -1,21 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Id="GlobalUsingAnalyzer.1eb6648b-e2bf-424b-ac28-3291e8d70717" Version="1.0" Language="en-US" Publisher="lukev"/>
+    <Identity Id="GlobalUsingAnalyzer.1eb6648b-e2bf-424b-ac28-3291e8d70717" Version="1.4.0" Language="en-US" Publisher="lukev"/>
     <DisplayName>GlobalUsingAnalyzer</DisplayName>
-    <Description xml:space="preserve">This is a sample diagnostic extension for the .NET Compiler Platform ("Roslyn").</Description>
+    <Description xml:space="preserve">Promotes C# usings (GUA001) and Razor @using directives (GUA003). Razor editor lightbulb is provided by a VSIX MEF suggested-action (C# code fixes alone cannot appear in the .razor lightbulb).</Description>
   </Metadata>
   <Installation>
-    <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[15.0,)" />
+    <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[17.0,)">
+      <ProductArchitecture>amd64</ProductArchitecture>
+    </InstallationTarget>
   </Installation>
   <Dependencies>
-    <Dependency Id="Microsoft.Framework.NDP" DisplayName="Microsoft .NET Framework" d:Source="Manual" Version="[4.5,)" />
+    <Dependency Id="Microsoft.Framework.NDP" DisplayName="Microsoft .NET Framework" d:Source="Manual" Version="[4.7.2,)" />
   </Dependencies>
   <Assets>
     <Asset Type="Microsoft.VisualStudio.MefComponent" d:Source="Project" d:ProjectName="GlobalUsingAnalyzer" Path="|GlobalUsingAnalyzer|"/>
     <Asset Type="Microsoft.VisualStudio.Analyzer" d:Source="Project" d:ProjectName="GlobalUsingAnalyzer" Path="|GlobalUsingAnalyzer|"/>
     <Asset Type="Microsoft.VisualStudio.MefComponent" d:Source="Project" d:ProjectName="GlobalUsingAnalyzer.CodeFixes" Path="|GlobalUsingAnalyzer.CodeFixes|"/>
     <Asset Type="Microsoft.VisualStudio.Analyzer" d:Source="Project" d:ProjectName="GlobalUsingAnalyzer.CodeFixes" Path="|GlobalUsingAnalyzer.CodeFixes|"/>
+    <!-- Razor editor lightbulb (ISuggestedActionsSourceProvider). -->
+    <Asset Type="Microsoft.VisualStudio.MefComponent" d:Source="Project" d:ProjectName="GlobalUsingAnalyzer.Vsix" Path="|GlobalUsingAnalyzer.Vsix|"/>
   </Assets>
   <Prerequisites>
     <Prerequisite Id="Microsoft.VisualStudio.Component.CoreEditor" Version="[15.0,)" DisplayName="Visual Studio core editor" />

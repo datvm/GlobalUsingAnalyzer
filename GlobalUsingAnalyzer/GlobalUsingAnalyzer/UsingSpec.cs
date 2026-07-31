@@ -80,6 +80,88 @@ public sealed class UsingSpec : IEquatable<UsingSpec>
 
     public string ToGlobalUsingLine() => $"global using {Identity};";
 
+    /// <summary>Razor imports form: <c>@using …</c> (no trailing semicolon required).</summary>
+    public string ToRazorUsingLine() => $"@using {Identity}";
+
+    /// <summary>
+    /// Parses an <see cref="Identity"/> string
+    /// (e.g. <c>System</c>, <c>static System.Math</c>, <c>IO = System.IO</c>).
+    /// </summary>
+    public static bool TryParseIdentity(string identity, out UsingSpec spec)
+    {
+        spec = null;
+
+        if (string.IsNullOrWhiteSpace(identity))
+        {
+            return false;
+        }
+
+        identity = identity.Trim();
+
+        const string staticPrefix = "static ";
+        if (identity.StartsWith(staticPrefix, StringComparison.Ordinal))
+        {
+            var include = identity.Substring(staticPrefix.Length).Trim();
+            if (include.Length == 0)
+            {
+                return false;
+            }
+
+            spec = new UsingSpec(include, alias: null, isStatic: true);
+            return true;
+        }
+
+        var eq = identity.IndexOf(" = ", StringComparison.Ordinal);
+        if (eq >= 0)
+        {
+            var alias = identity.Substring(0, eq).Trim();
+            var include = identity.Substring(eq + 3).Trim();
+            if (alias.Length == 0 || include.Length == 0)
+            {
+                return false;
+            }
+
+            spec = new UsingSpec(include, alias, isStatic: false);
+            return true;
+        }
+
+        spec = new UsingSpec(identity);
+        return true;
+    }
+
+    /// <summary>
+    /// Parses a Razor <c>@using</c> line (optional trailing semicolon, leading whitespace).
+    /// </summary>
+    public static bool TryParseRazorUsingLine(string line, out UsingSpec spec)
+    {
+        spec = null;
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return false;
+        }
+
+        var trimmed = line.Trim();
+        const string prefix = "@using";
+        if (!trimmed.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var rest = trimmed.Substring(prefix.Length).Trim();
+        if (rest.Length == 0)
+        {
+            return false;
+        }
+
+        // Drop optional trailing semicolon.
+        if (rest.EndsWith(";", StringComparison.Ordinal))
+        {
+            rest = rest.Substring(0, rest.Length - 1).TrimEnd();
+        }
+
+        return TryParseIdentity(rest, out spec);
+    }
+
     /// <summary>MSBuild item: <c>&lt;Using Include="…" [Static="True"] [Alias="…"] /&gt;</c>.</summary>
     public XElement ToMsBuildElement(XNamespace ns)
     {

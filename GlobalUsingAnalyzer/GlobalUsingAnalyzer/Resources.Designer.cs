@@ -101,5 +101,38 @@ namespace GlobalUsingAnalyzer
                 return ResourceManager.GetString("AnalyzerTitle", resourceCulture);
             }
         }
+
+        /// <summary>
+        ///   Looks up a localized string similar to @using directives in .cshtml / .razor files can be moved to nearest imports files.
+        /// </summary>
+        internal static string RazorUsingAnalyzerDescription
+        {
+            get
+            {
+                return ResourceManager.GetString("RazorUsingAnalyzerDescription", resourceCulture);
+            }
+        }
+
+        /// <summary>
+        ///   Looks up a localized string similar to Razor @using &apos;{0}&apos; in {1} can be moved to imports file (GlobalUsingAnalyzer).
+        /// </summary>
+        internal static string RazorUsingAnalyzerMessageFormat
+        {
+            get
+            {
+                return ResourceManager.GetString("RazorUsingAnalyzerMessageFormat", resourceCulture);
+            }
+        }
+
+        /// <summary>
+        ///   Looks up a localized string similar to Razor @using can be moved to imports file (GlobalUsingAnalyzer).
+        /// </summary>
+        internal static string RazorUsingAnalyzerTitle
+        {
+            get
+            {
+                return ResourceManager.GetString("RazorUsingAnalyzerTitle", resourceCulture);
+            }
+        }
     }
 }

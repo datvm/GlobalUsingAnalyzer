@@ -9,7 +9,7 @@ namespace GlobalUsingAnalyzer;
 public partial class GlobalUsingAnalyzerCodeFixProvider
 {
     /// <summary>
-    /// Custom Fix All for both destinations. Dispatches on
+    /// Custom Fix All for all destinations. Dispatches on
     /// <see cref="FixAllContext.CodeActionEquivalenceKey"/> so "Fix all" follows
     /// whichever lightbulb option the user expanded.
     /// </summary>
@@ -23,28 +23,42 @@ public partial class GlobalUsingAnalyzerCodeFixProvider
 
         public override async Task<CodeAction> GetFixAsync(FixAllContext fixAllContext)
         {
-            var toCsproj = fixAllContext.CodeActionEquivalenceKey == EquivalenceKeyCsproj;
+            var key = fixAllContext.CodeActionEquivalenceKey;
+            var toCsproj = key == EquivalenceKeyCsproj;
+            var toImports = key == EquivalenceKeyImportsRazor;
 
-            var title = (toCsproj, fixAllContext.Scope) switch
+            var title = (toCsproj, toImports, fixAllContext.Scope) switch
             {
-                (true, FixAllScope.Document) => "Move all usings in document to .csproj",
-                (true, FixAllScope.Project) => "Move all usings in project to .csproj",
-                (true, FixAllScope.Solution) => "Move all usings in solution to .csproj",
-                (false, FixAllScope.Document) => "Move all usings in document to ZGlobalUsings.cs",
-                (false, FixAllScope.Project) => "Move all usings in project to ZGlobalUsings.cs",
-                (false, FixAllScope.Solution) => "Move all usings in solution to ZGlobalUsings.cs",
-                (true, _) => CodeFixResources.CodeFixTitleCsproj,
+                (true, _, FixAllScope.Document) => "Move all usings in document to .csproj",
+                (true, _, FixAllScope.Project) => "Move all usings in project to .csproj",
+                (true, _, FixAllScope.Solution) => "Move all usings in solution to .csproj",
+                (_, true, FixAllScope.Document) => "Move all Razor usings in document to imports files",
+                (_, true, FixAllScope.Project) => "Move all Razor usings in project to imports files",
+                (_, true, FixAllScope.Solution) => "Move all Razor usings in solution to imports files",
+                (_, _, FixAllScope.Document) => "Move all usings in document to ZGlobalUsings.cs",
+                (_, _, FixAllScope.Project) => "Move all usings in project to ZGlobalUsings.cs",
+                (_, _, FixAllScope.Solution) => "Move all usings in solution to ZGlobalUsings.cs",
+                (true, _, _) => CodeFixResources.CodeFixTitleCsproj,
+                (_, true, _) => CodeFixResources.CodeFixTitleImportsRazor,
                 _ => CodeFixResources.CodeFixTitle,
             };
 
             var diagnostics = await GetDiagnosticsInScopeAsync(fixAllContext).ConfigureAwait(false);
-            var equivalenceKey = toCsproj ? EquivalenceKeyCsproj : EquivalenceKeyZGlobalUsings;
 
             if (toCsproj)
             {
                 return new MoveToCsprojCodeAction(
                     title,
-                    equivalenceKey,
+                    EquivalenceKeyCsproj,
+                    fixAllContext.Solution,
+                    diagnostics);
+            }
+
+            if (toImports)
+            {
+                return new MoveToImportsRazorCodeAction(
+                    title,
+                    EquivalenceKeyImportsRazor,
                     fixAllContext.Solution,
                     diagnostics);
             }
@@ -52,7 +66,7 @@ public partial class GlobalUsingAnalyzerCodeFixProvider
             return CodeAction.Create(
                 title: title,
                 createChangedSolution: ct => ApplyToZGlobalUsingsAsync(fixAllContext.Solution, diagnostics, ct),
-                equivalenceKey: equivalenceKey);
+                equivalenceKey: EquivalenceKeyZGlobalUsings);
         }
 
         private static async Task<ImmutableArray<Diagnostic>> GetDiagnosticsInScopeAsync(

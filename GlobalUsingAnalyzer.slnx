@@ -3,4 +3,5 @@
   <Project Path="GlobalUsingAnalyzer/GlobalUsingAnalyzer.Package/GlobalUsingAnalyzer.Package.csproj" />
   <Project Path="GlobalUsingAnalyzer/GlobalUsingAnalyzer.Test/GlobalUsingAnalyzer.Test.csproj" />
   <Project Path="GlobalUsingAnalyzer/GlobalUsingAnalyzer.Vsix/GlobalUsingAnalyzer.Vsix.csproj" />
+  <Project Path="GlobalUsingAnalyzer/GlobalUsingAnalyzer/GlobalUsingAnalyzer.csproj" />
 </Solution>

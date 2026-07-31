@@ -1,6 +1,15 @@
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Testing;
+using Microsoft.CodeAnalysis.Text;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.IO;
+using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using VerifyCS = GlobalUsingAnalyzer.Test.CSharpCodeFixVerifier<
     GlobalUsingAnalyzer.GlobalUsingAnalyzerAnalyzer,
@@ -776,4 +785,486 @@ class C
 
         await test.RunAsync();
     }
+
+    // --- GUA003: MVC .cshtml → _ViewImports.cshtml; Blazor .razor → _Imports.razor ---
+
+    [TestMethod]
+    public async Task ApplyMove_Cshtml_CreatesViewImportsAtRoot()
+    {
+        var projectPath = Path.Combine(Path.GetTempPath(), "gua-proj-" + Path.GetRandomFileName(), "App.csproj");
+        var projectDir = Path.GetDirectoryName(projectPath);
+        Directory.CreateDirectory(projectDir);
+
+        var pagesDir = Path.Combine(projectDir, "Pages");
+        Directory.CreateDirectory(pagesDir);
+        var cshtmlPath = Path.Combine(pagesDir, "Index.cshtml");
+        var cshtml = "@using System.Linq\n@page\n";
+        File.WriteAllText(cshtmlPath, cshtml);
+
+        try
+        {
+            var (solution, projectId) = CreateRazorTestSolution(projectPath, cshtmlPath, cshtml, "Index.cshtml");
+            var diagnostics = CreateRazorDiagnostics(cshtmlPath, "System.Linq");
+
+            var updated = await GlobalUsingAnalyzerCodeFixProvider
+                .ApplyMoveToImportsRazorAsync(solution, diagnostics, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            var importsPath = Path.Combine(projectDir, "_ViewImports.cshtml");
+            var importsDoc = TextDocumentPathHelper.FindTextDocument(updated, importsPath);
+            Assert.IsNotNull(importsDoc, "Expected _ViewImports.cshtml at project root.");
+            var importsText = (await importsDoc.GetTextAsync().ConfigureAwait(false)).ToString();
+            StringAssert.Contains(importsText, "@using System.Linq");
+
+            var cshtmlDoc = TextDocumentPathHelper.FindTextDocument(updated, cshtmlPath);
+            Assert.IsNotNull(cshtmlDoc);
+            var cshtmlText = (await cshtmlDoc.GetTextAsync().ConfigureAwait(false)).ToString();
+            Assert.IsFalse(cshtmlText.Contains("@using System.Linq"));
+            StringAssert.Contains(cshtmlText, "@page");
+
+            // Must not create Blazor imports for MVC source.
+            Assert.IsNull(TextDocumentPathHelper.FindTextDocument(
+                updated, Path.Combine(projectDir, "_Imports.razor")));
+        }
+        finally
+        {
+            TryDeleteDirectory(projectDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyMove_Razor_CreatesImportsRazorAtRoot()
+    {
+        var projectPath = Path.Combine(Path.GetTempPath(), "gua-proj-" + Path.GetRandomFileName(), "App.csproj");
+        var projectDir = Path.GetDirectoryName(projectPath);
+        var componentsDir = Path.Combine(projectDir, "Components");
+        Directory.CreateDirectory(componentsDir);
+        var razorPath = Path.Combine(componentsDir, "Counter.razor");
+        File.WriteAllText(razorPath, "@using System.Linq\n<h1>Hi</h1>\n");
+
+        try
+        {
+            var (solution, _) = CreateRazorTestSolution(projectPath, razorPath, "@using System.Linq\n<h1>Hi</h1>\n", "Counter.razor");
+            var diagnostics = CreateRazorDiagnostics(razorPath, "System.Linq");
+
+            var updated = await GlobalUsingAnalyzerCodeFixProvider
+                .ApplyMoveToImportsRazorAsync(solution, diagnostics, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            var importsPath = Path.Combine(projectDir, "_Imports.razor");
+            var importsDoc = TextDocumentPathHelper.FindTextDocument(updated, importsPath);
+            Assert.IsNotNull(importsDoc, "Expected _Imports.razor at project root.");
+            StringAssert.Contains(
+                (await importsDoc.GetTextAsync().ConfigureAwait(false)).ToString(),
+                "@using System.Linq");
+
+            Assert.IsNull(TextDocumentPathHelper.FindTextDocument(
+                updated, Path.Combine(projectDir, "_ViewImports.cshtml")));
+        }
+        finally
+        {
+            TryDeleteDirectory(projectDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyMove_Cshtml_UsesNearestExistingViewImports()
+    {
+        var projectPath = Path.Combine(Path.GetTempPath(), "gua-proj-" + Path.GetRandomFileName(), "App.csproj");
+        var projectDir = Path.GetDirectoryName(projectPath);
+        var pagesDir = Path.Combine(projectDir, "Pages");
+        Directory.CreateDirectory(pagesDir);
+
+        var existingImports = Path.Combine(pagesDir, "_ViewImports.cshtml");
+        File.WriteAllText(existingImports, "@using System\n");
+
+        var cshtmlPath = Path.Combine(pagesDir, "Index.cshtml");
+        File.WriteAllText(cshtmlPath, "@using System.Linq\n");
+
+        try
+        {
+            var workspace = new AdhocWorkspace();
+            var projectId = ProjectId.CreateNewId();
+            var solution = workspace.CurrentSolution
+                .AddProject(projectId, "App", "App", LanguageNames.CSharp)
+                .WithProjectFilePath(projectId, projectPath)
+                .WithProjectParseOptions(projectId, new CSharpParseOptions(LanguageVersion.CSharp10));
+
+            solution = solution.AddDocument(DocumentId.CreateNewId(projectId), "Program.cs", "class C { }");
+            var project = solution.GetProject(projectId);
+            project = project.AddAdditionalDocument("_ViewImports.cshtml", "@using System\n", filePath: existingImports).Project;
+            project = project.AddAdditionalDocument("Index.cshtml", "@using System.Linq\n", filePath: cshtmlPath).Project;
+            solution = project.Solution;
+
+            var updated = await GlobalUsingAnalyzerCodeFixProvider
+                .ApplyMoveToImportsRazorAsync(solution, CreateRazorDiagnostics(cshtmlPath, "System.Linq"), CancellationToken.None)
+                .ConfigureAwait(false);
+
+            var importsDoc = TextDocumentPathHelper.FindTextDocument(updated, existingImports);
+            Assert.IsNotNull(importsDoc);
+            var importsText = (await importsDoc.GetTextAsync().ConfigureAwait(false)).ToString();
+            StringAssert.Contains(importsText, "@using System");
+            StringAssert.Contains(importsText, "@using System.Linq");
+
+            var rootImports = Path.Combine(projectDir, "_ViewImports.cshtml");
+            Assert.IsFalse(string.Equals(existingImports, rootImports, StringComparison.OrdinalIgnoreCase));
+            var rootDoc = TextDocumentPathHelper.FindTextDocument(updated, rootImports);
+            if (rootDoc != null)
+            {
+                var rootText = (await rootDoc.GetTextAsync().ConfigureAwait(false)).ToString();
+                Assert.IsFalse(
+                    rootText.Contains("System.Linq"),
+                    "System.Linq should land in Pages/_ViewImports.cshtml, not project root.");
+            }
+        }
+        finally
+        {
+            TryDeleteDirectory(projectDir);
+        }
+    }
+
+    private static (Solution Solution, ProjectId ProjectId) CreateRazorTestSolution(
+        string projectPath,
+        string sourcePath,
+        string sourceText,
+        string sourceName)
+    {
+        var workspace = new AdhocWorkspace();
+        var projectId = ProjectId.CreateNewId();
+        var solution = workspace.CurrentSolution
+            .AddProject(projectId, "App", "App", LanguageNames.CSharp)
+            .WithProjectFilePath(projectId, projectPath)
+            .WithProjectParseOptions(projectId, new CSharpParseOptions(LanguageVersion.CSharp10));
+
+        solution = solution.AddDocument(DocumentId.CreateNewId(projectId), "Program.cs", "class C { }");
+        var project = solution.GetProject(projectId);
+        project = project.AddAdditionalDocument(sourceName, sourceText, filePath: sourcePath).Project;
+        return (project.Solution, projectId);
+    }
+
+    private static ImmutableArray<Diagnostic> CreateRazorDiagnostics(string sourcePath, string identity)
+    {
+        var descriptor = new DiagnosticDescriptor(
+            GlobalUsingAnalyzerAnalyzer.RazorUsingDiagnosticId,
+            "t",
+            "Razor @using '{0}' can be moved to imports file",
+            "Style",
+            DiagnosticSeverity.Info,
+            isEnabledByDefault: true);
+
+        var emptySpan = new TextSpan(0, 0);
+        var emptyLine = new LinePositionSpan(new LinePosition(0, 0), new LinePosition(0, 0));
+        var properties = ImmutableDictionary<string, string>.Empty
+            .Add(GlobalUsingAnalyzerAnalyzer.UsingIdentityProperty, identity)
+            .Add(GlobalUsingAnalyzerAnalyzer.RazorSourcePathProperty, sourcePath);
+
+        return ImmutableArray.Create(
+            Diagnostic.Create(
+                descriptor,
+                Location.Create("Program.cs", emptySpan, emptyLine),
+                properties,
+                identity));
+    }
+
+    [TestMethod]
+    public async Task ApplyMove_WhenAlreadyInRootImports_OnlyRemovesLocalDuplicate()
+    {
+        var projectPath = Path.Combine(Path.GetTempPath(), "gua-proj-" + Path.GetRandomFileName(), "App.csproj");
+        var projectDir = Path.GetDirectoryName(projectPath);
+        var pagesDir = Path.Combine(projectDir, "Pages");
+        Directory.CreateDirectory(pagesDir);
+
+        var rootImports = Path.Combine(projectDir, "_Imports.razor");
+        File.WriteAllText(rootImports, "@using System.Linq\n");
+
+        var razorPath = Path.Combine(pagesDir, "Index.razor");
+        File.WriteAllText(razorPath, "@using System.Linq\n<h1>Hi</h1>\n");
+
+        try
+        {
+            var workspace = new AdhocWorkspace();
+            var projectId = ProjectId.CreateNewId();
+            var solution = workspace.CurrentSolution
+                .AddProject(projectId, "App", "App", LanguageNames.CSharp)
+                .WithProjectFilePath(projectId, projectPath)
+                .WithProjectParseOptions(projectId, new CSharpParseOptions(LanguageVersion.CSharp10));
+
+            solution = solution.AddDocument(DocumentId.CreateNewId(projectId), "Program.cs", "class C { }");
+            var project = solution.GetProject(projectId);
+            project = project.AddAdditionalDocument("_Imports.razor", "@using System.Linq\n", filePath: rootImports).Project;
+            project = project.AddAdditionalDocument("Index.razor", "@using System.Linq\n<h1>Hi</h1>\n", filePath: razorPath).Project;
+            solution = project.Solution;
+
+            var updated = await GlobalUsingAnalyzerCodeFixProvider
+                .ApplyMoveToImportsRazorAsync(solution, CreateRazorDiagnostics(razorPath, "System.Linq"), CancellationToken.None)
+                .ConfigureAwait(false);
+
+            // Local duplicate removed.
+            var pageDoc = TextDocumentPathHelper.FindTextDocument(updated, razorPath);
+            Assert.IsNotNull(pageDoc);
+            var pageText = (await pageDoc.GetTextAsync().ConfigureAwait(false)).ToString();
+            Assert.IsFalse(pageText.Contains("@using System.Linq"));
+            StringAssert.Contains(pageText, "<h1>Hi</h1>");
+
+            // Root imports unchanged (still has System.Linq once).
+            var importsDoc = TextDocumentPathHelper.FindTextDocument(updated, rootImports);
+            Assert.IsNotNull(importsDoc);
+            var importsText = (await importsDoc.GetTextAsync().ConfigureAwait(false)).ToString();
+            Assert.AreEqual(1, RazorUsingEditor.EnumerateUsings(importsText).Count);
+
+            // Must not create an imports file in the parent of the project.
+            var parentImports = Path.Combine(Path.GetDirectoryName(projectDir), "_Imports.razor");
+            Assert.IsFalse(File.Exists(parentImports), "Must not create _Imports.razor outside the project.");
+            Assert.IsNull(TextDocumentPathHelper.FindTextDocument(updated, parentImports));
+        }
+        finally
+        {
+            TryDeleteDirectory(projectDir);
+        }
+    }
+
+    /// <summary>
+    /// Blazor Web App layout: solution folder + Server + Client. Promote from Client\Routes.razor
+    /// must use Client\_Imports.razor, never create solutionFolder\_Imports.razor.
+    /// </summary>
+    [TestMethod]
+    public async Task ApplyMove_BlazorWebApp_UsesClientImports_NotSolutionFolder()
+    {
+        var solutionDir = Path.Combine(Path.GetTempPath(), "gua-bwa-" + Path.GetRandomFileName());
+        var serverDir = Path.Combine(solutionDir, "BlazorApp1");
+        var clientDir = Path.Combine(solutionDir, "BlazorApp1.Client");
+        Directory.CreateDirectory(serverDir);
+        Directory.CreateDirectory(clientDir);
+
+        var serverCsproj = Path.Combine(serverDir, "BlazorApp1.csproj");
+        var clientCsproj = Path.Combine(clientDir, "BlazorApp1.Client.csproj");
+        File.WriteAllText(serverCsproj, "<Project />");
+        File.WriteAllText(clientCsproj, "<Project />");
+
+        var clientImports = Path.Combine(clientDir, "_Imports.razor");
+        File.WriteAllText(clientImports, "@using System\n");
+
+        var routesPath = Path.Combine(clientDir, "Routes.razor");
+        File.WriteAllText(routesPath, "@using System.Linq\n");
+
+        try
+        {
+            var workspace = new AdhocWorkspace();
+            var serverId = ProjectId.CreateNewId();
+            var clientId = ProjectId.CreateNewId();
+
+            var solution = workspace.CurrentSolution
+                .AddProject(serverId, "BlazorApp1", "BlazorApp1", LanguageNames.CSharp)
+                .WithProjectFilePath(serverId, serverCsproj)
+                .AddProject(clientId, "BlazorApp1.Client", "BlazorApp1.Client", LanguageNames.CSharp)
+                .WithProjectFilePath(clientId, clientCsproj)
+                .WithProjectParseOptions(clientId, new CSharpParseOptions(LanguageVersion.CSharp10));
+
+            solution = solution.AddDocument(DocumentId.CreateNewId(serverId), "Program.cs", "class S { }");
+            solution = solution.AddDocument(DocumentId.CreateNewId(clientId), "Program.cs", "class C { }");
+
+            var client = solution.GetProject(clientId);
+            client = client.AddAdditionalDocument("_Imports.razor", "@using System\n", filePath: clientImports).Project;
+            client = client.AddAdditionalDocument("Routes.razor", "@using System.Linq\n", filePath: routesPath).Project;
+            solution = client.Solution;
+
+            // Diagnostic primary location intentionally on the *server* C# doc (wrong host) —
+            // owning project must still resolve to Client via source path.
+            var diagnostics = CreateRazorDiagnostics(routesPath, "System.Linq");
+
+            var updated = await GlobalUsingAnalyzerCodeFixProvider
+                .ApplyMoveToImportsRazorAsync(solution, diagnostics, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            var importsDoc = TextDocumentPathHelper.FindTextDocument(updated, clientImports);
+            Assert.IsNotNull(importsDoc);
+            var importsText = (await importsDoc.GetTextAsync().ConfigureAwait(false)).ToString();
+            StringAssert.Contains(importsText, "@using System.Linq");
+            StringAssert.Contains(importsText, "@using System");
+
+            // Solution folder must not get a rogue _Imports.razor.
+            var solutionImports = Path.Combine(solutionDir, "_Imports.razor");
+            Assert.IsFalse(File.Exists(solutionImports));
+            Assert.IsNull(TextDocumentPathHelper.FindTextDocument(updated, solutionImports));
+
+            // Server project folder must not get one either.
+            var serverImports = Path.Combine(serverDir, "_Imports.razor");
+            Assert.IsFalse(File.Exists(serverImports));
+        }
+        finally
+        {
+            TryDeleteDirectory(solutionDir);
+        }
+    }
+
+    // --- GUA003 analyzer reporting (must compile + produce diagnostics) ---
+
+    [TestMethod]
+    public async Task Analyzer_ReportsGua003_FromAdditionalFiles()
+    {
+        var projectDir = Path.Combine(Path.GetTempPath(), "gua-anal-af-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(projectDir);
+        var programPath = Path.Combine(projectDir, "Program.cs");
+        var razorPath = Path.Combine(projectDir, "Counter.razor");
+        File.WriteAllText(programPath, "class C { }");
+        File.WriteAllText(razorPath, "@using System.Linq\n<h1>Hi</h1>\n");
+        File.WriteAllText(Path.Combine(projectDir, "App.csproj"), "<Project />");
+
+        try
+        {
+            var diagnostics = await RunAnalyzerAsync(
+                programPath,
+                additionalFiles: new[] { (razorPath, File.ReadAllText(razorPath)) },
+                diskOnly: false).ConfigureAwait(false);
+
+            var gua003 = diagnostics.Where(d => d.Id == GlobalUsingAnalyzerAnalyzer.RazorUsingDiagnosticId).ToArray();
+            Assert.AreEqual(1, gua003.Length, "Expected GUA003 from AdditionalFiles. All: " + Describe(diagnostics));
+            StringAssert.Contains(gua003[0].GetMessage(), "System.Linq");
+            StringAssert.Contains(gua003[0].GetMessage(), "Counter.razor");
+            Assert.AreEqual(
+                razorPath,
+                gua003[0].Properties[GlobalUsingAnalyzerAnalyzer.RazorSourcePathProperty],
+                ignoreCase: true);
+            // Primary is the .razor path (external location) so Error List associates with that file.
+            Assert.IsFalse(
+                string.IsNullOrEmpty(gua003[0].Location.GetLineSpan().Path),
+                "Primary location must point at the Razor source path.");
+            var reportedPath = gua003[0].Location.GetLineSpan().Path
+                ?? gua003[0].Properties[GlobalUsingAnalyzerAnalyzer.RazorSourcePathProperty];
+            // MSTest: EndsWith(value, substring) — value must end with substring.
+            StringAssert.EndsWith(reportedPath, "Counter.razor");
+        }
+        finally
+        {
+            TryDeleteDirectory(projectDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task Analyzer_ReportsGua003_FromDiskScan_WithoutAdditionalFiles()
+    {
+        // VSIX path: no NuGet props → no AdditionalFiles → walk project dir from .csproj next to sources.
+        var projectDir = Path.Combine(Path.GetTempPath(), "gua-anal-disk-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(projectDir);
+        var programPath = Path.Combine(projectDir, "Program.cs");
+        var componentsDir = Path.Combine(projectDir, "Components");
+        Directory.CreateDirectory(componentsDir);
+        var razorPath = Path.Combine(componentsDir, "Counter.razor");
+        File.WriteAllText(programPath, "class C { }");
+        File.WriteAllText(razorPath, "@using System.Collections.Generic\n<button />\n");
+        File.WriteAllText(Path.Combine(projectDir, "App.csproj"), "<Project />");
+
+        try
+        {
+            var diagnostics = await RunAnalyzerAsync(
+                programPath,
+                additionalFiles: Array.Empty<(string, string)>(),
+                diskOnly: true).ConfigureAwait(false);
+
+            var gua003 = diagnostics.Where(d => d.Id == GlobalUsingAnalyzerAnalyzer.RazorUsingDiagnosticId).ToArray();
+            Assert.AreEqual(1, gua003.Length, "Expected GUA003 from disk scan. All: " + Describe(diagnostics));
+            StringAssert.Contains(gua003[0].GetMessage(), "System.Collections.Generic");
+            Assert.AreEqual(
+                razorPath,
+                gua003[0].Properties[GlobalUsingAnalyzerAnalyzer.RazorSourcePathProperty],
+                ignoreCase: true);
+        }
+        finally
+        {
+            TryDeleteDirectory(projectDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task Analyzer_SkipsGua003_WhenUsingAlreadyInImports()
+    {
+        var projectDir = Path.Combine(Path.GetTempPath(), "gua-anal-skip-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(projectDir);
+        var programPath = Path.Combine(projectDir, "Program.cs");
+        var razorPath = Path.Combine(projectDir, "Counter.razor");
+        var importsPath = Path.Combine(projectDir, "_Imports.razor");
+        File.WriteAllText(programPath, "class C { }");
+        File.WriteAllText(importsPath, "@using System.Linq\n");
+        File.WriteAllText(razorPath, "@using System.Linq\n<h1>Hi</h1>\n");
+        File.WriteAllText(Path.Combine(projectDir, "App.csproj"), "<Project />");
+
+        try
+        {
+            var diagnostics = await RunAnalyzerAsync(
+                programPath,
+                additionalFiles: new[]
+                {
+                    (importsPath, File.ReadAllText(importsPath)),
+                    (razorPath, File.ReadAllText(razorPath)),
+                },
+                diskOnly: false).ConfigureAwait(false);
+
+            var gua003 = diagnostics.Where(d => d.Id == GlobalUsingAnalyzerAnalyzer.RazorUsingDiagnosticId).ToArray();
+            Assert.AreEqual(0, gua003.Length, "Inherited @using must not produce GUA003. All: " + Describe(diagnostics));
+        }
+        finally
+        {
+            TryDeleteDirectory(projectDir);
+        }
+    }
+
+    private static async Task<ImmutableArray<Diagnostic>> RunAnalyzerAsync(
+        string programPath,
+        IReadOnlyList<(string Path, string Content)> additionalFiles,
+        bool diskOnly)
+    {
+        var tree = CSharpSyntaxTree.ParseText(File.ReadAllText(programPath), path: programPath);
+        var compilation = CSharpCompilation.Create(
+            "App",
+            new[] { tree },
+            new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) },
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        var additionalTexts = diskOnly
+            ? ImmutableArray<AdditionalText>.Empty
+            : additionalFiles
+                .Select(f => (AdditionalText)new TestAdditionalText(f.Path, f.Content))
+                .ToImmutableArray();
+
+        var options = new AnalyzerOptions(additionalTexts);
+        var compilationWithAnalyzers = compilation.WithAnalyzers(
+            ImmutableArray.Create<DiagnosticAnalyzer>(new GlobalUsingAnalyzerAnalyzer()),
+            options);
+
+        return await compilationWithAnalyzers.GetAnalyzerDiagnosticsAsync().ConfigureAwait(false);
+    }
+
+    private static string Describe(ImmutableArray<Diagnostic> diagnostics) =>
+        diagnostics.IsDefaultOrEmpty
+            ? "(none)"
+            : string.Join("; ", diagnostics.Select(d => d.Id + ": " + d.GetMessage()));
+
+    private sealed class TestAdditionalText : AdditionalText
+    {
+        private readonly SourceText _text;
+
+        public TestAdditionalText(string path, string content)
+        {
+            Path = path;
+            _text = SourceText.From(content ?? string.Empty);
+        }
+
+        public override string Path { get; }
+
+        public override SourceText GetText(CancellationToken cancellationToken = default) => _text;
+    }
+
+    private static void TryDeleteDirectory(string projectDir)
+    {
+        try
+        {
+            Directory.Delete(projectDir, recursive: true);
+        }
+        catch
+        {
+            // best-effort
+        }
+    }
 }
+
+

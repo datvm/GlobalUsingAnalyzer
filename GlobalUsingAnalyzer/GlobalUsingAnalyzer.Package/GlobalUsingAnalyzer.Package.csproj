@@ -33,6 +33,8 @@
 
   <ItemGroup>
     <None Update="tools\*.ps1" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="" />
+    <None Include="buildTransitive\GlobalUsingAnalyzer.props" Pack="true" PackagePath="buildTransitive\GlobalUsingAnalyzer.props" />
+    <None Include="buildTransitive\GlobalUsingAnalyzer.props" Pack="true" PackagePath="build\GlobalUsingAnalyzer.props" />
   </ItemGroup>
 
   <Target Name="_AddAnalyzersToOutput">
