@@ -21,7 +21,7 @@ Diagnostics:
 
 ## Install
 
-[Placeholder for Marketplace links]
+[Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=LukeVo.GlobalUsingAnalyzer)
 
 ## Features
 
