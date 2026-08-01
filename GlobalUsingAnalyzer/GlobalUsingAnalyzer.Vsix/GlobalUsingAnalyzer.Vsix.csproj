@@ -24,6 +24,14 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Content Remove="C:\Users\lukev\.nuget\packages\microsoft.vssdk.buildtools\17.7.2196\contentFiles\any\net472\LICENSE_SDKOOB.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="C:\Users\lukev\.nuget\packages\microsoft.vssdk.buildtools\17.7.2196\contentFiles\any\net472\NOTICE.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="17.7.2196" PrivateAssets="all" />
     <!-- Compile against VS APIs; do not bundle them in the VSIX (present in the IDE). -->
     <PackageReference Include="Microsoft.VisualStudio.SDK" Version="17.7.37357" ExcludeAssets="runtime">
